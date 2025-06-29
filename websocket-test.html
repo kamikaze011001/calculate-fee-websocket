@@ -67,7 +67,7 @@
         let connected = false;
 
         function connect() {
-            const socket = new SockJS('http://localhost:8080/ws');
+            const socket = new WebSocket('ws://localhost:8080/ws');
             stompClient = Stomp.over(socket);
             
             stompClient.connect({}, function(frame) {
