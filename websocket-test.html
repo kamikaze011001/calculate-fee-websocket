@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EOS Fee Calculator WebSocket Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.5.2/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        textarea { width: 100%; height: 100px; margin: 10px 0; }
+        button { padding: 10px 15px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .log { background: #f8f9fa; padding: 10px; border-radius: 3px; height: 300px; overflow-y: scroll; font-family: monospace; font-size: 12px; line-height: 1.4; }
+        .log-sent { color: #0066cc; }
+        .log-received { color: #009900; }
+        .log-error { color: #cc0000; font-weight: bold; }
+        .log-info { color: #666666; }
+        .status { padding: 5px 10px; border-radius: 3px; margin: 5px 0; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>EOS Fee Calculator WebSocket Test</h1>
+        
+        <div class="section">
+            <h3>Connection Status</h3>
+            <div id="status" class="status disconnected">Disconnected</div>
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+        </div>
+
+        <div class="section">
+            <h3>Quick Tests</h3>
+            <button onclick="sendPing()">Send Ping</button>
+            <button onclick="sendCalculateFee()">Calculate Fee (Valid Amount)</button>
+            <button onclick="sendCalculateFeeError()">Calculate Fee (Large Amount - Will Fail)</button>
+            <button onclick="testRateLimit()">Test Rate Limit (20+ requests)</button>
+        </div>
+
+        <div class="section">
+            <h3>Custom Message</h3>
+            <textarea id="customMessage" placeholder="Enter JSON message here...">{
+  "type": "CALCULATE_FEE",
+  "requestId": "test-123",
+  "data": {
+    "from": "berserker2k1",
+    "to": "berserker2k2", 
+    "quantity": 1.0000,
+    "memo": "Custom test transfer"
+  }
+}</textarea>
+            <button onclick="sendCustomMessage()">Send Custom Message</button>
+        </div>
+
+        <div class="section">
+            <h3>Message Log</h3>
+            <button onclick="clearLog()">Clear Log</button>
+            <div id="log" class="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let stompClient = null;
+        let connected = false;
+
+        function connect() {
+            const socket = new SockJS('http://localhost:8080/ws');
+            stompClient = Stomp.over(socket);
+            
+            stompClient.connect({}, function(frame) {
+                connected = true;
+                updateStatus(true);
+                log('[OK] WebSocket Connected Successfully');
+                
+                stompClient.subscribe('/user/queue/response', function(message) {
+                    const response = JSON.parse(message.body);
+                    logFormatted('RECEIVED', response);
+                });
+            }, function(error) {
+                connected = false;
+                updateStatus(false);
+                log('[ERROR] Connection failed: ' + error, 'error');
+            });
+        }
+
+        function disconnect() {
+            if (stompClient !== null) {
+                stompClient.disconnect();
+            }
+            connected = false;
+            updateStatus(false);
+            log('[INFO] Disconnected from WebSocket');
+        }
+
+        function sendPing() {
+            if (!connected) {
+                alert('Please connect first');
+                return;
+            }
+            
+            const message = {
+                type: 'PING',
+                requestId: 'ping-' + Date.now(),
+                data: {}
+            };
+            
+            stompClient.send('/app/message', {}, JSON.stringify(message));
+            logFormatted('SENT', message);
+        }
+
+        function sendCalculateFee() {
+            if (!connected) {
+                alert('Please connect first');
+                return;
+            }
+            
+            const message = {
+                type: 'CALCULATE_FEE',
+                requestId: 'fee-' + Date.now(),
+                data: {
+                    from: 'berserker2k1',
+                    to: 'berserker2k2',
+                    quantity: 1.0000,
+                    memo: 'Valid test transfer'
+                }
+            };
+            
+            stompClient.send('/app/message', {}, JSON.stringify(message));
+            logFormatted('SENT', message);
+        }
+
+        function sendCalculateFeeError() {
+            if (!connected) {
+                alert('Please connect first');
+                return;
+            }
+            
+            const message = {
+                type: 'CALCULATE_FEE',
+                requestId: 'fee-error-' + Date.now(),
+                data: {
+                    from: 'berserker2k1',
+                    to: 'berserker2k2',
+                    quantity: 10000.0000,
+                    memo: 'Large amount - should fail with overdrawn balance'
+                }
+            };
+            
+            stompClient.send('/app/message', {}, JSON.stringify(message));
+            logFormatted('SENT', message);
+        }
+
+        function testRateLimit() {
+            if (!connected) {
+                alert('Please connect first');
+                return;
+            }
+            
+            log('Testing rate limit - sending 25 CALCULATE_FEE requests...');
+            
+            for (let i = 0; i < 25; i++) {
+                setTimeout(() => {
+                    const message = {
+                        type: 'CALCULATE_FEE',
+                        requestId: 'rate-test-' + i,
+                        data: {
+                            from: 'testaccount1',
+                            to: 'testaccount2',
+                            quantity: 0.0001,
+                            memo: 'Rate limit test ' + i
+                        }
+                    };
+                    
+                    stompClient.send('/app/message', {}, JSON.stringify(message));
+                    if (i < 3 || i >= 22) {
+                        logFormatted('SENT', message);
+                    } else if (i === 3) {
+                        log('[INFO] Sending 19 more rate limit test requests...', 'info');
+                    }
+                }, i * 100);
+            }
+        }
+
+        function sendCustomMessage() {
+            if (!connected) {
+                alert('Please connect first');
+                return;
+            }
+            
+            const messageText = document.getElementById('customMessage').value;
+            try {
+                const message = JSON.parse(messageText);
+                stompClient.send('/app/message', {}, JSON.stringify(message));
+                logFormatted('SENT', message);
+            } catch (e) {
+                alert('Invalid JSON: ' + e.message);
+            }
+        }
+
+        function updateStatus(isConnected) {
+            const statusDiv = document.getElementById('status');
+            if (isConnected) {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const className = type === 'error' ? 'log-error' : 'log-info';
+            logDiv.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function logFormatted(direction, messageObj) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const isReceived = direction === 'RECEIVED';
+            const className = isReceived ? 'log-received' : 'log-sent';
+            const arrow = isReceived ? '<--' : '-->';
+            
+            let summary = '';
+            if (messageObj.type === 'PING') {
+                summary = isReceived ? 
+                    `PONG (${messageObj.data?.message || 'response'})` : 
+                    'PING';
+            } else if (messageObj.type === 'CALCULATE_FEE') {
+                if (isReceived) {
+                    if (messageObj.success) {
+                        // Debug: log the full response to see structure
+                        console.log('Full response:', messageObj);
+                        
+                        // Extract CPU and NET usage from successful transaction
+                        const receipt = messageObj.data?.processed?.receipt;
+                        if (receipt) {
+                            const cpuUsage = receipt.cpu_usage_us || 'N/A';
+                            const netUsage = receipt.net_usage_words || 'N/A';
+                            const status = receipt.status || 'executed';
+                            summary = `FEE RESULT (CPU: ${cpuUsage}us, NET: ${netUsage} words) - Status: ${status}`;
+                        } else {
+                            // Fallback for unexpected successful response structure
+                            summary = `FEE RESULT (Structure: success but no receipt found)`;
+                        }
+                    } else {
+                        // Transaction failed - show error details
+                        const errorMsg = messageObj.error || 'Unknown error';
+                        summary = `TRANSACTION FAILED: ${errorMsg}`;
+                    }
+                } else {
+                    const data = messageObj.data || {};
+                    summary = `CALCULATE_FEE (${data.from} -> ${data.to}: ${data.quantity})`;
+                }
+            } else if (messageObj.type === 'ERROR') {
+                summary = `ERROR: ${messageObj.error || 'Unknown error'}`;
+            } else {
+                summary = messageObj.type || 'UNKNOWN';
+            }
+            
+            const requestId = messageObj.requestId ? ` [${messageObj.requestId.substring(0, 8)}...]` : '';
+            
+            // Use error styling for failed transactions
+            let finalClassName = className;
+            if (isReceived && !messageObj.success) {
+                finalClassName = 'log-error';
+            }
+            
+            logDiv.innerHTML += `<span class="${finalClassName}">[${timestamp}] ${arrow} ${direction}: ${summary}${requestId}</span>\n`;
+            
+            // Log rate limit errors more prominently
+            if (messageObj.error && messageObj.error.includes('Rate limit')) {
+                logDiv.innerHTML += `<span class="log-error">*** RATE LIMIT EXCEEDED - Wait 1 minute before more CALCULATE_FEE requests ***</span>\n`;
+            }
+            
+            // Log EOS transaction errors prominently
+            if (isReceived && messageObj.type === 'CALCULATE_FEE' && !messageObj.success && messageObj.error) {
+                if (messageObj.error.includes('overdrawn balance')) {
+                    logDiv.innerHTML += `<span class="log-error">*** INSUFFICIENT EOS BALANCE - Try with a smaller amount ***</span>\n`;
+                } else if (messageObj.error.includes('account')) {
+                    logDiv.innerHTML += `<span class="log-error">*** ACCOUNT ERROR - Check account names are valid ***</span>\n`;
+                }
+            }
+            
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // Auto-connect on page load
+        window.onload = function() {
+            log('[READY] WebSocket Test Client Ready - Click Connect to start!');
+        };
+
+        // Cleanup on page unload
+        window.onbeforeunload = function() {
+            if (connected) {
+                disconnect();
+            }
+        };
+    </script>
+</body>
+</html>
